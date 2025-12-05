@@ -13,6 +13,7 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 
 from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier
 from sklearn.metrics import (
     accuracy_score,
     confusion_matrix,
@@ -392,25 +393,26 @@ train_size = int(n_samples * train_frac)
 X_train, X_test = X.iloc[:train_size], X.iloc[train_size:]
 y_train, y_test = y.iloc[:train_size], y.iloc[train_size:]
 
-# ---- Train RF model ----
-rf = RandomForestClassifier(
+# ---- Train XGB model ----
+xgb = XGBClassifier(
     n_estimators=300,
     max_depth=6,
-    min_samples_leaf=10,
     random_state=42,
-    class_weight="balanced",
     n_jobs=-1,
+    use_label_encoder=False,
+    eval_metric='logloss',
+    learning_rate=0.1,           
 )
-rf.fit(X_train, y_train)
+xgb.fit(X_train, y_train)
 
 # ---- Predictions ----
-proba_train = rf.predict_proba(X_train)[:, 1]
-proba_test = rf.predict_proba(X_test)[:, 1]
+proba_train = xgb.predict_proba(X_train)[:, 1]
+proba_test = xgb.predict_proba(X_test)[:, 1]
 y_pred_train = (proba_train > 0.5).astype(int)
 y_pred_test = (proba_test > 0.5).astype(int)
 
 # Attach probability to full index
-proba_full = rf.predict_proba(X)[:, 1]
+proba_full = xgb.predict_proba(X)[:, 1]
 p_up = pd.Series(proba_full, index=X.index, name="P(up)")
 
 
@@ -769,7 +771,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-fa = rf.feature_importances_
+fa = xgb.feature_importances_
 fi_df = pd.DataFrame({"Feature": feature_cols, "Importance": fa})
 fi_df = fi_df.sort_values("Importance", ascending=False)
 
@@ -855,7 +857,7 @@ with st.expander("🔬 SHAP Explainability (Plotly Version)", expanded=False):
 
     X_sample = X.sample(min(300, len(X)), random_state=42)
 
-    explainer = shap.Explainer(rf, X_sample)
+    explainer = shap.Explainer(xgb, X_sample)
     shap_values = explainer(X_sample)
 
     # Handle classification: take class 1
