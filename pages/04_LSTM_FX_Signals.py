@@ -402,7 +402,7 @@ lstm = LSTMModule(
     hidden_size=128,
     num_layers=2,
     epochs=100,
-    batch_size=64,
+    batch_size=32,
     lr=0.001
 )
 
