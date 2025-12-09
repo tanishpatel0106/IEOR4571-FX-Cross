@@ -102,8 +102,6 @@ st.markdown(
 @st.cache_data
 def load_fx(symbol, timeframe, start_date, end_date):
     interval = {
-        "1m": "1m",        # NEW
-        "15m": "15m",      # OPTIONAL – if you want
         "Daily": "1d",
         "4H": "4h",
         "1H": "1h",
@@ -286,7 +284,7 @@ with st.sidebar:
 
     timeframe = st.selectbox(
         "Timeframe",
-        ["1m", "15m", "1H", "4H", "Daily", "Weekly"]  # order: intraday → higher TF
+        ["1H", "4H", "Daily", "Weekly"]  # order: intraday → higher TF
     )
 
     start_date = st.date_input("Start Date", value=datetime(2023, 1, 1))
@@ -296,11 +294,11 @@ with st.sidebar:
         st.error("End Date must be after Start Date.")
         st.stop()
     
-    if timeframe == "1m":
-        # Yahoo only supports ~30 days of 1m data
-        if (end_date - start_date).days > 30:
-            st.warning("1m data limited to ~30 days on Yahoo. Clamping start date.")
-            start_date = end_date - pd.Timedelta(days=30)
+    # if timeframe == "1m":
+    #     # Yahoo only supports ~30 days of 1m data
+    #     if (end_date - start_date).days > 30:
+    #         st.warning("1m data limited to ~30 days on Yahoo. Clamping start date.")
+    #         start_date = end_date - pd.Timedelta(days=30)
 
     st.markdown("#### ES Parameters (for Features & Hybrid)")
     alpha = st.slider("α (slow smoothing)", 0.01, 0.5, 0.10, 0.01)
