@@ -115,33 +115,36 @@ def load_fx(symbol, timeframe, start_date, end_date):
 def load_macro_fred(start_date, end_date):
     fred = Fred(api_key=st.secrets["FRED_API_KEY"])
 
-    # ---- FRED series (validated working set) ----
     series_map = {
         "ecb_rate": "ECBDFR",
         "eur_3m_interbank": "IR3TIB01EZM156N",
         "jpn_interbank": "IRSTCI01JPM156N",
         "jgb_10y": "IRLTLT01JPM156N",
         "eur_cpi_yoy": "CP0000EZ19M086NEST",
-        "jpn_cpi_yoy": "CPALTT01JPM657N",
-        "eur_gdp_level": "CLVMEURSCAB1GQEA19",   # level (quarterly) -> we compute growth
-        "jpn_gdp_level": "JPNRGDPEXP",           # level -> we compute growth
+        "eur_gdp_level": "CLVMEURSCAB1GQEA19",
+        "jpn_gdp_level": "JPNRGDPEXP",
         "eur_ip": "IPN31152N",
         "jpn_ip": "JPNPROINDMISMEI",
     }
 
     df = pd.DataFrame()
+
     for col, sid in series_map.items():
         s = fred.get_series(sid)
+        s = s.dropna()                      # 🔑 CRITICAL
+        s.index = pd.to_datetime(s.index)
         df[col] = s
 
-    # Keep a buffer so pct_change has previous points
     df = df.sort_index()
-    df = df.loc[(pd.to_datetime(start_date) - pd.Timedelta(days=400)) : pd.to_datetime(end_date)]
+
+    # buffer for pct_change
+    df = df.loc[
+        (pd.to_datetime(start_date) - pd.Timedelta(days=400)) :
+        pd.to_datetime(end_date)
+    ]
 
     return df
 
-
-@st.cache_data
 @st.cache_data
 def load_macro_yahoo(start_date, end_date):
 
@@ -167,6 +170,16 @@ def load_macro_yahoo(start_date, end_date):
     yahoo_df = vix.join(spx, how="outer")
     return yahoo_df.sort_index()
 
+@st.cache_data
+def load_fred_csv(series_id):
+    url = f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={series_id}"
+    df = pd.read_csv(url)
+    # st.write(f"Loaded FRED series {series_id} from CSV. Columns: {df.columns.tolist()}")
+    df["observation_date"] = pd.to_datetime(df["observation_date"])
+    df.set_index("observation_date", inplace=True)
+    df = df.replace(".", np.nan).astype(float)
+    # st.dataframe(df.tail())
+    return df.iloc[:, 0]
 
 def build_macro_frame(prices_index, start_date, end_date):
     fred_df = load_macro_fred(start_date, end_date)
@@ -174,37 +187,142 @@ def build_macro_frame(prices_index, start_date, end_date):
 
     macro = fred_df.join(yahoo_df, how="outer").sort_index()
 
-    # 🔑 CRITICAL: align & forward-fill FIRST
+    # Align base macro frame
     macro = macro.reindex(prices_index).ffill()
 
-    # ---- Derived features (AFTER ffill) ----
-    macro["inflation_diff"] = macro["eur_cpi_yoy"] - macro["jpn_cpi_yoy"]
+    # ---- FIX EUR CPI ALIGNMENT ----
+    eur_cpi = macro["eur_cpi_yoy"].dropna()
+    eur_cpi = (
+        eur_cpi
+        .reindex(eur_cpi.index.union(prices_index))
+        .sort_index()
+        .ffill()
+    )
+    macro["eur_cpi_yoy"] = eur_cpi.reindex(prices_index)
+
+    # ---- Japan CPI YoY (already YoY from FRED) ----
+    jpn_cpi_yoy = load_fred_csv("CPALTT01JPM659N")
+
+    # 1️⃣ Restrict CPI to backtest window
+    jpn_cpi_yoy = jpn_cpi_yoy.loc[
+        (jpn_cpi_yoy.index <= prices_index.max())
+    ]
+
+    # 2️⃣ Reindex using UNION, not overwrite
+    jpn_cpi_yoy = (
+        jpn_cpi_yoy
+        .reindex(jpn_cpi_yoy.index.union(prices_index))
+        .sort_index()
+        .ffill()
+    )
+
+    # 3️⃣ Now align to trading index
+    macro["jpn_cpi_yoy"] = jpn_cpi_yoy.reindex(prices_index)
 
     macro["eur_gdp_qoq"] = macro["eur_gdp_level"].pct_change()
     macro["jpn_gdp_qoq"] = macro["jpn_gdp_level"].pct_change()
     macro["gdp_diff_qoq"] = macro["eur_gdp_qoq"] - macro["jpn_gdp_qoq"]
-
     macro["spx_ret"] = macro["spx"].pct_change()
+
+    macro["inflation_diff"] = (
+        pd.to_numeric(macro["eur_cpi_yoy"], errors="coerce")
+        - pd.to_numeric(macro["jpn_cpi_yoy"], errors="coerce")
+    )
+    macro["inflation_diff"] = macro["inflation_diff"].ffill()
+
+    macro = macro.ffill()
+
+    # st.write("JPN CPI YoY last valid:", macro["jpn_cpi_yoy"].last_valid_index())
+    # st.write("Inflation diff last valid:", macro["inflation_diff"].last_valid_index())
 
     return macro
 
+# def build_macro_frame(prices_index, start_date, end_date):
+#     fred_df = load_macro_fred(start_date, end_date)
+#     yahoo_df = load_macro_yahoo(start_date, end_date)
+
+#     # ---- Base join ----
+#     macro = fred_df.join(yahoo_df, how="outer").sort_index()
+
+#     # ---- Japan CPI (monthly) ----
+#     jpn_cpi_level = load_fred_csv("CPALTT01JPM659N")
+
+#     # 🔑 ALIGN CPI TO TRADING INDEX BEFORE INSERTING
+#     jpn_cpi_level = jpn_cpi_level.reindex(prices_index).ffill()
+
+#     macro["jpn_cpi_level"] = jpn_cpi_level
+
+
+#     # ---- Align EVERYTHING to trading index ----
+#     macro = macro.reindex(prices_index)
+
+#     # 🔑 THIS IS THE FIX
+#     macro = macro.ffill()
+
+#     # ---- Derived features (AFTER ffill) ----
+#     macro["jpn_cpi_yoy"] = macro["jpn_cpi_level"].pct_change(12) * 100
+#     macro["eur_gdp_qoq"] = macro["eur_gdp_level"].pct_change()
+#     macro["jpn_gdp_qoq"] = macro["jpn_gdp_level"].pct_change()
+#     macro["gdp_diff_qoq"] = macro["eur_gdp_qoq"] - macro["jpn_gdp_qoq"]
+#     macro["spx_ret"] = macro["spx"].pct_change()
+
+#     macro["inflation_diff"] = macro["eur_cpi_yoy"] - macro["jpn_cpi_yoy"]
+
+#     # ---- Final fill for derived cols ----
+#     macro = macro.ffill()
+
+#     st.write("JPN CPI level last valid:", macro["jpn_cpi_level"].last_valid_index())
+#     st.write("JPN CPI YoY last valid:", macro["jpn_cpi_yoy"].last_valid_index())
+#     st.write("Inflation diff last valid:", macro["inflation_diff"].last_valid_index())
+
+
+#     return macro
+
 def macro_regime_filter(
     macro_df,
-    vix_max=30.0,
-    infl_diff_abs_max=6.0
+    vix_center=25.0,
+    vix_width=5.0,
+    infl_scale=4.0,
+    trade_cutoff=0.25
 ):
-    regime = pd.Series(1.0, index=macro_df.index)
+    idx = macro_df.index
 
-    # VIX filter (safe)
+    # =========================
+    # 1. VIX CONFIDENCE (logistic)
+    # =========================
     if "vix" in macro_df.columns:
-        regime = regime.where(macro_df["vix"].fillna(0) <= vix_max, 0.0)
+        vix = macro_df["vix"].fillna(vix_center)
+        vix_conf = 1 / (1 + np.exp((vix - vix_center) / vix_width))
+    else:
+        vix_conf = pd.Series(1.0, index=idx)
 
-    # Inflation filter (NaN-safe)
+    # =========================
+    # 2. INFLATION CONFIDENCE (exponential)
+    # =========================
     if "inflation_diff" in macro_df.columns:
-        infl = macro_df["inflation_diff"].abs()
-        regime = regime.where(infl.isna() | (infl <= infl_diff_abs_max), 0.0)
+        infl = macro_df["inflation_diff"].abs().fillna(0.0)
+        infl_conf = np.exp(-infl / infl_scale)
+    else:
+        infl_conf = pd.Series(1.0, index=idx)
 
-    return regime
+    # =========================
+    # 3. COMBINE (NO MULTIPLICATIVE DECAY)
+    # =========================
+    macro_conf = 0.5 * vix_conf + 0.5 * infl_conf
+    macro_conf = macro_conf.clip(0.0, 1.0)
+
+    # =========================
+    # 4. TRADE PERMISSION (binary)
+    # =========================
+    trade_allowed = (macro_conf >= trade_cutoff).astype(float)
+
+    # =========================
+    # DEBUG
+    # =========================
+    # st.write("Macro confidence stats:", macro_conf.describe())
+    # st.write("Trade allowed %:", trade_allowed.mean())
+
+    return macro_conf, trade_allowed
 
 # ========================================================
 # 2. EXPONENTIAL SMOOTHING
@@ -454,9 +572,20 @@ with st.sidebar:
 
     enable_macro = st.checkbox("Enable ES + Macro Strategy", value=True)
 
-    vix_max = st.slider("VIX max (risk-on filter)", 10.0, 60.0, 25.0, 1.0)
-    infl_diff_abs_max = st.slider("Max |Inflation Diff| (EUR CPI - JPN CPI)", 0.0, 10.0, 4.0, 0.25)
-    gdp_diff_min = st.slider("Min GDP Diff QoQ (EUR - JPN)", -0.02, 0.02, -0.002, 0.001)
+    vix_center = st.slider("VIX stress center", 15.0, 40.0, 25.0, 1.0)
+    vix_width = st.slider("VIX smoothness", 1.0, 10.0, 5.0, 0.5)
+
+    infl_scale = st.slider(
+        "Inflation tolerance (|EUR - JPN|)",
+        1.0, 10.0, 4.0, 0.5
+    )
+
+    trade_cutoff = st.slider(
+        "Macro confidence cutoff (flatten below)",
+        0.0, 1.0, 0.25, 0.05
+    )
+
+    # gdp_diff_min = st.slider("Min GDP Diff QoQ (EUR - JPN)", -0.02, 0.02, -0.002, 0.001)
 
     strategy_view = st.radio(
         "Strategy View",
@@ -574,15 +703,28 @@ strat_returns_base, equity_base, metrics_base, trades_df_base, drawdown_base = b
 # ---- MACRO AUGMENTED ----
 if enable_macro:
     macro_df = build_macro_frame(prices.index, start_date, end_date)
-    regime = macro_regime_filter(
+    macro_conf, trade_allowed = macro_regime_filter(
         macro_df,
-        vix_max=vix_max,
-        # gdp_diff_min=gdp_diff_min,
-        infl_diff_abs_max=infl_diff_abs_max,
+        vix_center=vix_center,
+        vix_width=vix_width,
+        infl_scale=infl_scale,
+        trade_cutoff=trade_cutoff
     )
 
-    raw_signals_macro = raw_signals_base * regime.reindex(prices.index).fillna(0.0)
+
+    # 1️⃣ Keep original ES signals
+    raw_signals_macro = raw_signals_base.copy() * trade_allowed
+
+    # 2️⃣ Build ES positions normally
     positions_macro = raw_signals_macro.replace(0, np.nan).ffill().fillna(0.0)
+
+    # 3️⃣ APPLY MACRO TO POSITIONS (NOT SIGNALS)
+    positions_macro = positions_macro * macro_conf.reindex(prices.index).fillna(1.0)
+
+    # st.write("Raw signals:", (raw_signals_base != 0).sum())
+    # st.write("Avg macro confidence:", macro_conf.mean())
+    # st.write("Avg |position|:", positions_macro.abs().mean())
+
 
     strat_returns_macro, equity_macro, metrics_macro, trades_df_macro, drawdown_macro = backtest(
         prices, raw_signals_macro, positions_macro, cost, starting_capital
@@ -974,10 +1116,10 @@ with tab_compare:
 
         # Optional: show regime line
         if macro_df is not None and "vix" in macro_df.columns:
-            st.markdown("#### Macro Regime (1=Trade Allowed, 0=Blocked)")
-            st.line_chart(regime)
+            # st.markdown("#### Macro Regime (1=Trade Allowed, 0=Blocked)")
+            # st.line_chart(regime)
             st.markdown("#### Macro Snapshot (latest)")
-            st.dataframe(macro_df.tail(5), use_container_width=True)
+            st.dataframe(macro_df, use_container_width=True)
     else:
         st.info("Enable ES + Macro Strategy in the sidebar to view comparisons.")
 
