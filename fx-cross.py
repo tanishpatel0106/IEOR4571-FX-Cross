@@ -5,6 +5,7 @@ import yfinance as yf
 import plotly.graph_objects as go
 import plotly.express as px
 from datetime import datetime
+from fredapi import Fred
 
 # ========================================================
 # STREAMLIT CONFIG + GLOBAL STYLES
@@ -107,6 +108,103 @@ def load_fx(symbol, timeframe, start_date, end_date):
 
     return df
 
+# ========================================================
+# 1B. MACRO DATA LOADING (FRED + Yahoo Risk)
+# ========================================================
+@st.cache_data
+def load_macro_fred(start_date, end_date):
+    fred = Fred(api_key=st.secrets["FRED_API_KEY"])
+
+    # ---- FRED series (validated working set) ----
+    series_map = {
+        "ecb_rate": "ECBDFR",
+        "eur_3m_interbank": "IR3TIB01EZM156N",
+        "jpn_interbank": "IRSTCI01JPM156N",
+        "jgb_10y": "IRLTLT01JPM156N",
+        "eur_cpi_yoy": "CP0000EZ19M086NEST",
+        "jpn_cpi_yoy": "CPALTT01JPM657N",
+        "eur_gdp_level": "CLVMEURSCAB1GQEA19",   # level (quarterly) -> we compute growth
+        "jpn_gdp_level": "JPNRGDPEXP",           # level -> we compute growth
+        "eur_ip": "IPN31152N",
+        "jpn_ip": "JPNPROINDMISMEI",
+    }
+
+    df = pd.DataFrame()
+    for col, sid in series_map.items():
+        s = fred.get_series(sid)
+        df[col] = s
+
+    # Keep a buffer so pct_change has previous points
+    df = df.sort_index()
+    df = df.loc[(pd.to_datetime(start_date) - pd.Timedelta(days=400)) : pd.to_datetime(end_date)]
+
+    return df
+
+
+@st.cache_data
+@st.cache_data
+def load_macro_yahoo(start_date, end_date):
+
+    def _download_flat(ticker, col_name):
+        df = yf.download(
+            ticker,
+            start=start_date,
+            end=end_date,
+            progress=False,
+            group_by="column"  # IMPORTANT
+        )
+
+        # ---- FORCE FLATTEN ----
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.droplevel(1)
+
+        df = df[["Close"]].rename(columns={"Close": col_name})
+        return df
+
+    vix = _download_flat("^VIX", "vix")
+    spx = _download_flat("^GSPC", "spx")
+
+    yahoo_df = vix.join(spx, how="outer")
+    return yahoo_df.sort_index()
+
+
+def build_macro_frame(prices_index, start_date, end_date):
+    fred_df = load_macro_fred(start_date, end_date)
+    yahoo_df = load_macro_yahoo(start_date, end_date)
+
+    macro = fred_df.join(yahoo_df, how="outer").sort_index()
+
+    # 🔑 CRITICAL: align & forward-fill FIRST
+    macro = macro.reindex(prices_index).ffill()
+
+    # ---- Derived features (AFTER ffill) ----
+    macro["inflation_diff"] = macro["eur_cpi_yoy"] - macro["jpn_cpi_yoy"]
+
+    macro["eur_gdp_qoq"] = macro["eur_gdp_level"].pct_change()
+    macro["jpn_gdp_qoq"] = macro["jpn_gdp_level"].pct_change()
+    macro["gdp_diff_qoq"] = macro["eur_gdp_qoq"] - macro["jpn_gdp_qoq"]
+
+    macro["spx_ret"] = macro["spx"].pct_change()
+
+    return macro
+
+def macro_regime_filter(
+    macro_df,
+    vix_max=30.0,
+    infl_diff_abs_max=6.0
+):
+    regime = pd.Series(1.0, index=macro_df.index)
+
+    # VIX filter (safe)
+    if "vix" in macro_df.columns:
+        regime = regime.where(macro_df["vix"].fillna(0) <= vix_max, 0.0)
+
+    # Inflation filter (NaN-safe)
+    if "inflation_diff" in macro_df.columns:
+        infl = macro_df["inflation_diff"].abs()
+        regime = regime.where(infl.isna() | (infl <= infl_diff_abs_max), 0.0)
+
+    return regime
 
 # ========================================================
 # 2. EXPONENTIAL SMOOTHING
@@ -348,6 +446,25 @@ with st.sidebar:
         step=0.0001,
     )
 
+    # ========================================================
+    # MACRO STRATEGY CONTROLS
+    # ========================================================
+    st.markdown("---")
+    st.markdown("### 🌍 Macro Integration")
+
+    enable_macro = st.checkbox("Enable ES + Macro Strategy", value=True)
+
+    vix_max = st.slider("VIX max (risk-on filter)", 10.0, 60.0, 25.0, 1.0)
+    infl_diff_abs_max = st.slider("Max |Inflation Diff| (EUR CPI - JPN CPI)", 0.0, 10.0, 4.0, 0.25)
+    gdp_diff_min = st.slider("Min GDP Diff QoQ (EUR - JPN)", -0.02, 0.02, -0.002, 0.001)
+
+    strategy_view = st.radio(
+        "Strategy View",
+        ["Baseline ES", "ES + Macro", "Comparison"],
+        horizontal=False
+    )
+
+
     # ----- PRESET MANAGER -----
     st.markdown("---")
     st.markdown("### 💾 Preset Manager")
@@ -437,30 +554,99 @@ st.markdown(
 
 
 # ========================================================
-# 8. DATA + STRATEGY COMPUTATION
+# 8. DATA + STRATEGY COMPUTATION (BASELINE + MACRO)
 # ========================================================
 df = load_fx(symbol, timeframe, start_date, end_date)
 prices = df["price"]
 
+# ---- BASELINE ES ----
 es_alpha = exp_smooth(prices, alpha)
 es_beta = exp_smooth(prices, beta)
 
-raw_signals, positions = generate_signals(
-    es_alpha,
-    es_beta,
-    prices.index,
-    x=x_threshold,
-    exit_rule=exit_rule,
-    theta=theta,
+raw_signals_base, positions_base = generate_signals(
+    es_alpha, es_beta, prices.index, x=x_threshold, exit_rule=exit_rule, theta=theta
 )
 
-strat_returns, equity, metrics, trades_df, drawdown = backtest(
-    prices,
-    raw_signals,
-    positions,
-    cost,
-    starting_capital,
+strat_returns_base, equity_base, metrics_base, trades_df_base, drawdown_base = backtest(
+    prices, raw_signals_base, positions_base, cost, starting_capital
 )
+
+# ---- MACRO AUGMENTED ----
+if enable_macro:
+    macro_df = build_macro_frame(prices.index, start_date, end_date)
+    regime = macro_regime_filter(
+        macro_df,
+        vix_max=vix_max,
+        # gdp_diff_min=gdp_diff_min,
+        infl_diff_abs_max=infl_diff_abs_max,
+    )
+
+    raw_signals_macro = raw_signals_base * regime.reindex(prices.index).fillna(0.0)
+    positions_macro = raw_signals_macro.replace(0, np.nan).ffill().fillna(0.0)
+
+    strat_returns_macro, equity_macro, metrics_macro, trades_df_macro, drawdown_macro = backtest(
+        prices, raw_signals_macro, positions_macro, cost, starting_capital
+    )
+else:
+    macro_df = None
+    regime = pd.Series(1.0, index=prices.index)
+    raw_signals_macro = raw_signals_base.copy()
+    positions_macro = positions_base.copy()
+    strat_returns_macro, equity_macro, metrics_macro, trades_df_macro, drawdown_macro = (
+        strat_returns_base, equity_base, metrics_base, trades_df_base, drawdown_base
+    )
+
+# ---- ACTIVE VIEW SWITCH ----
+if strategy_view == "Baseline ES":
+    raw_signals = raw_signals_base
+    positions = positions_base
+    strat_returns = strat_returns_base
+    equity = equity_base
+    metrics = metrics_base
+    trades_df = trades_df_base
+    drawdown = drawdown_base
+
+elif strategy_view == "ES + Macro":
+    raw_signals = raw_signals_macro
+    positions = positions_macro
+    strat_returns = strat_returns_macro
+    equity = equity_macro
+    metrics = metrics_macro
+    trades_df = trades_df_macro
+    drawdown = drawdown_macro
+
+else:
+    # Comparison mode still uses charts based on both (handled below)
+    raw_signals = raw_signals_base
+    positions = positions_base
+    strat_returns = strat_returns_base
+    equity = equity_base
+    metrics = metrics_base
+    trades_df = trades_df_base
+    drawdown = drawdown_base
+
+# df = load_fx(symbol, timeframe, start_date, end_date)
+# prices = df["price"]
+
+# es_alpha = exp_smooth(prices, alpha)
+# es_beta = exp_smooth(prices, beta)
+
+# raw_signals, positions = generate_signals(
+#     es_alpha,
+#     es_beta,
+#     prices.index,
+#     x=x_threshold,
+#     exit_rule=exit_rule,
+#     theta=theta,
+# )
+
+# strat_returns, equity, metrics, trades_df, drawdown = backtest(
+#     prices,
+#     raw_signals,
+#     positions,
+#     cost,
+#     starting_capital,
+# )
 
 
 # ========================================================
@@ -561,6 +747,32 @@ c5.info(f"**x threshold**\n{x_threshold:.3f}")
 c6.info(f"**Exit rule**\n{exit_rule}")
 c7.info(f"**θ (deceleration)**\n{theta:.4f}")
 
+# ========================================================
+# COMPARISON KPIs (only in Comparison view)
+# ========================================================
+if strategy_view == "Comparison":
+    st.markdown(
+        """
+        <div class="section-header">
+          <h3>Comparison KPIs (Macro − Baseline)</h3>
+          <p>Positive is better for Sharpe/Return. Drawdown delta is Baseline − Macro (positive means Macro reduced DD).</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    cA, cB, cC, cD = st.columns(4)
+
+    delta_sharpe = metrics_macro["Sharpe Ratio"] - metrics_base["Sharpe Ratio"]
+    delta_ret = metrics_macro["Total Return %"] - metrics_base["Total Return %"]
+    delta_dd = metrics_base["Max Drawdown"] - metrics_macro["Max Drawdown"]
+    delta_trades = metrics_macro["Number of Trades (signals)"] - metrics_base["Number of Trades (signals)"]
+
+    kpi_box(cA, "Δ Sharpe", delta_sharpe, sub="Macro − Baseline", fmt=lambda v: f"{v:+.2f}")
+    kpi_box(cB, "Δ Total Return", delta_ret, sub="Macro − Baseline", fmt=lambda v: f"{v:+.2f}%")
+    kpi_box(cC, "Δ Max Drawdown", delta_dd, sub="Baseline − Macro", fmt=lambda v: f"{v:+,.0f}")
+    kpi_box(cD, "Δ Trades", delta_trades, sub="Macro − Baseline", fmt=lambda v: f"{int(v):+d}")
+
 
 # ========================================================
 # 11. CHARTS – TABS
@@ -575,8 +787,8 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-tab_price, tab_equity, tab_es, tab_returns = st.tabs(
-    ["📈 Price & Trade Signals", "📉 Equity & Drawdown", "📊 Exponential Smoothing", "📦 Return Distribution"]
+tab_price, tab_equity, tab_es, tab_returns, tab_compare = st.tabs(
+    ["📈 Price & Trade Signals", "📉 Equity & Drawdown", "📊 Exponential Smoothing", "📦 Return Distribution", "🆚 Compare"]
 )
 
 # --- Tab 1: Price & Trade Signals ---
@@ -744,6 +956,30 @@ with tab_returns:
         st.plotly_chart(hist_fig, use_container_width=True)
     else:
         st.info("Not enough data to plot return distribution.")
+
+with tab_compare:
+    if enable_macro:
+        fig_cmp = go.Figure()
+        fig_cmp.add_trace(go.Scatter(x=equity_base.index, y=equity_base, mode="lines", name="Baseline ES"))
+        fig_cmp.add_trace(go.Scatter(x=equity_macro.index, y=equity_macro, mode="lines", name="ES + Macro"))
+        fig_cmp.update_layout(
+            height=450,
+            template="plotly_dark",
+            margin=dict(l=10, r=10, t=40, b=20),
+            xaxis_title="Date",
+            yaxis_title="Equity (USD)",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+        st.plotly_chart(fig_cmp, use_container_width=True)
+
+        # Optional: show regime line
+        if macro_df is not None and "vix" in macro_df.columns:
+            st.markdown("#### Macro Regime (1=Trade Allowed, 0=Blocked)")
+            st.line_chart(regime)
+            st.markdown("#### Macro Snapshot (latest)")
+            st.dataframe(macro_df.tail(5), use_container_width=True)
+    else:
+        st.info("Enable ES + Macro Strategy in the sidebar to view comparisons.")
 
 
 # ========================================================
