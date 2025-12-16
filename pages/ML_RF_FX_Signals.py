@@ -122,11 +122,20 @@ def load_fx(symbol, timeframe, start_date, end_date):
     )
     df = df.dropna(axis=1, how="all")
 
+    # Robustly flatten ticker columns from yfinance
     if isinstance(df.columns, pd.MultiIndex):
-        df = df[symbol]
+        cols0 = df.columns.get_level_values(0)
+        cols1 = df.columns.get_level_values(-1)
+
+        if symbol in cols0:
+            df = df.xs(symbol, axis=1, level=0)
+        elif symbol in cols1:
+            df = df.xs(symbol, axis=1, level=-1)
+        else:
+            df.columns = df.columns.droplevel(1)
 
     df = df[["Open", "High", "Low", "Close"]].dropna()
-    df = df.astype(float)    
+    df = df.astype(float)
     return df
 
 
