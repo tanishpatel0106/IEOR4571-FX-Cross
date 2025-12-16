@@ -905,128 +905,128 @@ with tab_proba:
     st.plotly_chart(proba_fig, use_container_width=True)
 
 
-# ========================================================
-# 9. XAI VIEW – FEATURE IMPORTANCE + OPTIONAL SHAP
-# ========================================================
-st.markdown(
-    """
-    <div class="section-header">
-      <h3>Explainability – What Drives P(up)?</h3>
-      <p>Feature importances from RandomForest; optional SHAP values if installed.</p>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
+# # ========================================================
+# # 9. XAI VIEW – FEATURE IMPORTANCE + OPTIONAL SHAP
+# # ========================================================
+# st.markdown(
+#     """
+#     <div class="section-header">
+#       <h3>Explainability – What Drives P(up)?</h3>
+#       <p>Feature importances from RandomForest; optional SHAP values if installed.</p>
+#     </div>
+#     """,
+#     unsafe_allow_html=True,
+# )
 
-fa = rf.feature_importances_
-fi_df = pd.DataFrame({"Feature": feature_cols, "Importance": fa})
-fi_df = fi_df.sort_values("Importance", ascending=False)
-fi_df_top = fi_df.head(10)
+# fa = rf.feature_importances_
+# fi_df = pd.DataFrame({"Feature": feature_cols, "Importance": fa})
+# fi_df = fi_df.sort_values("Importance", ascending=False)
+# fi_df_top = fi_df.head(10)
 
-c1, c2 = st.columns([1.2, 1])
+# c1, c2 = st.columns([1.2, 1])
 
-with c1:
-    fi_fig = px.bar(
-        fi_df_top,
-        x="Importance",
-        y="Feature",
-        orientation="h",
-        title="RandomForest Feature Importances",
-    )
-    fi_fig.update_layout(
-        template="plotly_dark",
-        height=450,
-        margin=dict(l=10, r=10, t=40, b=20),
-    )
-    st.plotly_chart(fi_fig, use_container_width=True)
+# with c1:
+#     fi_fig = px.bar(
+#         fi_df_top,
+#         x="Importance",
+#         y="Feature",
+#         orientation="h",
+#         title="RandomForest Feature Importances",
+#     )
+#     fi_fig.update_layout(
+#         template="plotly_dark",
+#         height=450,
+#         margin=dict(l=10, r=10, t=40, b=20),
+#     )
+#     st.plotly_chart(fi_fig, use_container_width=True)
 
-with c2:
-    st.write("Top features driving predictions:")
-    st.dataframe(fi_df.head(10), use_container_width=True)
+# with c2:
+#     st.write("Top features driving predictions:")
+#     st.dataframe(fi_df.head(10), use_container_width=True)
 
-st.markdown("---")
+# st.markdown("---")
 
-with st.expander("🔬 SHAP Explainability (Plotly Version)", expanded=False):
-    if SHAP_AVAILABLE:
-        top_features = fi_df_top["Feature"].tolist()
-        X_sample = X[top_features].sample(min(300, len(X)), random_state=42)
+# with st.expander("🔬 SHAP Explainability (Plotly Version)", expanded=False):
+#     if SHAP_AVAILABLE:
+#         top_features = fi_df_top["Feature"].tolist()
+#         X_sample = X[top_features].sample(min(300, len(X)), random_state=42)
 
-        explainer = shap.Explainer(rf, X_sample)
-        shap_values = explainer(X_sample)
+#         explainer = shap.Explainer(rf, X_sample)
+#         shap_values = explainer(X_sample)
 
-        # Handle classification: take class 1
-        if shap_values.values.ndim == 3:
-            shap_vals = shap_values.values[:, :, 1]  # (n_samples, n_features)
-        else:
-            shap_vals = shap_values.values
-        st.write("### 📊 Global Feature Importance (Plotly)")
+#         # Handle classification: take class 1
+#         if shap_values.values.ndim == 3:
+#             shap_vals = shap_values.values[:, :, 1]  # (n_samples, n_features)
+#         else:
+#             shap_vals = shap_values.values
+#         st.write("### 📊 Global Feature Importance (Plotly)")
 
-        mean_abs = np.abs(shap_vals).mean(axis=0)
-        importance = pd.DataFrame({
-            "feature": X_sample.columns,
-            "importance": mean_abs
-        }).sort_values("importance", ascending=False)
+#         mean_abs = np.abs(shap_vals).mean(axis=0)
+#         importance = pd.DataFrame({
+#             "feature": X_sample.columns,
+#             "importance": mean_abs
+#         }).sort_values("importance", ascending=False)
 
-        fig_imp = px.bar(
-            importance.head(10),
-            x="importance",
-            y="feature",
-            orientation="h",
-            title="Mean |SHAP| Importance",
-            color="importance",
-            color_continuous_scale="Viridis"
-        )
-        fig_imp.update_layout(yaxis={'categoryorder':'total ascending'})
-        st.plotly_chart(fig_imp, use_container_width=True)
-        st.write("### 🌈 SHAP Beeswarm (Plotly Version)")
+#         fig_imp = px.bar(
+#             importance.head(10),
+#             x="importance",
+#             y="feature",
+#             orientation="h",
+#             title="Mean |SHAP| Importance",
+#             color="importance",
+#             color_continuous_scale="Viridis"
+#         )
+#         fig_imp.update_layout(yaxis={'categoryorder':'total ascending'})
+#         st.plotly_chart(fig_imp, use_container_width=True)
+#         st.write("### 🌈 SHAP Beeswarm (Plotly Version)")
 
-        # Flatten into long-format table
-        shap_long = pd.DataFrame(shap_vals, columns=X_sample.columns).melt(
-            var_name="feature", value_name="shap_value"
-        )
-        shap_long["abs"] = shap_long["shap_value"].abs()
+#         # Flatten into long-format table
+#         shap_long = pd.DataFrame(shap_vals, columns=X_sample.columns).melt(
+#             var_name="feature", value_name="shap_value"
+#         )
+#         shap_long["abs"] = shap_long["shap_value"].abs()
 
-        fig_bee = px.strip(
-            shap_long,
-            x="shap_value",
-            y="feature",
-            color="abs",
-            # color_continuous_scale="RdBu_r",
-            title="Beeswarm-like SHAP Plot (Plotly)"
-        )
-        st.plotly_chart(fig_bee, use_container_width=True)
-        st.write("### 🎯 Local Explanation – Select a Sample")
-        idx = st.number_input("Sample index", min_value=0, max_value=len(X_sample)-1, value=0)
-        sample_features = X_sample.iloc[idx]
-        sample_shap = shap_vals[idx]
-        st.write("### 💧 Local Waterfall Plot (Plotly)")
+#         fig_bee = px.strip(
+#             shap_long,
+#             x="shap_value",
+#             y="feature",
+#             color="abs",
+#             # color_continuous_scale="RdBu_r",
+#             title="Beeswarm-like SHAP Plot (Plotly)"
+#         )
+#         st.plotly_chart(fig_bee, use_container_width=True)
+#         st.write("### 🎯 Local Explanation – Select a Sample")
+#         idx = st.number_input("Sample index", min_value=0, max_value=len(X_sample)-1, value=0)
+#         sample_features = X_sample.iloc[idx]
+#         sample_shap = shap_vals[idx]
+#         st.write("### 💧 Local Waterfall Plot (Plotly)")
 
-        base_value = explainer.expected_value[1] if shap_values.values.ndim == 3 else explainer.expected_value
+#         base_value = explainer.expected_value[1] if shap_values.values.ndim == 3 else explainer.expected_value
 
-        df_local = pd.DataFrame({
-            "feature": X_sample.columns,
-            "shap": sample_shap,
-            "direction": ["positive" if v > 0 else "negative" for v in sample_shap]
-        }).sort_values("shap")
+#         df_local = pd.DataFrame({
+#             "feature": X_sample.columns,
+#             "shap": sample_shap,
+#             "direction": ["positive" if v > 0 else "negative" for v in sample_shap]
+#         }).sort_values("shap")
 
-        fig_local = go.Figure()
+#         fig_local = go.Figure()
 
-        fig_local.add_trace(go.Bar(
-            x=df_local["shap"],
-            y=df_local["feature"],
-            orientation="h",
-            marker_color=df_local["shap"],
-            marker_colorscale="RdBu",
-        ))
+#         fig_local.add_trace(go.Bar(
+#             x=df_local["shap"],
+#             y=df_local["feature"],
+#             orientation="h",
+#             marker_color=df_local["shap"],
+#             marker_colorscale="RdBu",
+#         ))
 
-        fig_local.update_layout(
-            title=f"Local SHAP Values (Sample {idx})",
-            xaxis_title="SHAP Contribution",
-            yaxis_title="Feature",
-            height=600
-        )
+#         fig_local.update_layout(
+#             title=f"Local SHAP Values (Sample {idx})",
+#             xaxis_title="SHAP Contribution",
+#             yaxis_title="Feature",
+#             height=600
+#         )
 
-        st.plotly_chart(fig_local, use_container_width=True)
+#         st.plotly_chart(fig_local, use_container_width=True)
 
-    else:
-        st.info("Install SHAP for explainability: `pip install shap`")
+#     else:
+#         st.info("Install SHAP for explainability: `pip install shap`")
