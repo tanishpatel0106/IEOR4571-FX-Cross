@@ -109,9 +109,9 @@ st.markdown(
 @st.cache_data
 def load_fx(symbol, timeframe, start_date, end_date):
     interval = {
+        "1H": "1h",
+        "4H": "4h",
         "Daily": "1d",
-        # "4H": "4h",
-        # "1H": "1h",
         "Weekly": "1wk",
         "Monthly": "1mo",
         "Quarterly": "3mo"
