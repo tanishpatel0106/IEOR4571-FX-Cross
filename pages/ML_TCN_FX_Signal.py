@@ -472,18 +472,17 @@ with st.sidebar:
 # ========================================================
 st.markdown(
     f"""
-    <div style="padding: 1rem 1.25rem; border-radius: 0.9rem;
+<div style="padding: 1rem 1.25rem; border-radius: 0.9rem;
                 background: linear-gradient(90deg, #111827, #020617);
                 border: 1px solid #1F2937; margin-bottom: 1rem;">
       <div style="display:flex; justify-content:space-between; align-items:center;">
         <div>
-<h2>TCN ES + ML Hybrid Strategy</h2>
-<p>
-Temporal Convolutional Network (causal dilated convolutions)
-predicts next-period direction probability and filters
-the α–β Exponential Smoothing strategy.
-</p>
-
+          <h2 style="color:#F9FAFB; margin-bottom:0.1rem;">
+            ML TCN Signals & Hybrid Exponential Smoothing
+          </h2>
+          <p style="color:#9CA3AF; font-size:0.85rem; margin-top:0.15rem;">
+            Train a Temporal Convolutional Network to predict next-period direction, then overlay it on the α–β strategy as an ML filter.
+          </p>
         </div>
         <div style="text-align:right; color:#9CA3AF; font-size:0.80rem;">
           <div>Asset: <span style="color:#E5E7EB;">{symbol}</span></div>
