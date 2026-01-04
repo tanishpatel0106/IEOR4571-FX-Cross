@@ -4,11 +4,11 @@ Streamlit workspace for researching and stress-testing a dual-exponential-smooth
 
 ## Collaborators
 
-- Tanish Patel <tp2899@columbia.edu>
-- Aditya Pendyala <ap4839@columbia.edu>
-- Rishit Belani <rb3881@columbia.edu>
-- Arnav Ahuja <aa5790@columbia.edu>
-- Aryamaan Srivastava <as7845@columbia.edu>
+- **Tanish Patel** <tp2899@columbia.edu>
+- **Aditya Pendyala** <ap4839@columbia.edu>
+- **Rishit Belani** <rb3881@columbia.edu>
+- **Arnav Ahuja** <aa5790@columbia.edu>
+- **Aryamaan Srivastava** <as7845@columbia.edu>
 
 ---
 
